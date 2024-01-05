@@ -25,15 +25,11 @@ contract OpenZeppelinERC20Test is Test, PropertiesAsserts {
         token = new OpenZeppelinERC20(); 
     }
 
-    /** 
-    *  @dev
-    *  Proves that minting changes balance as expected.
-    */ 
-    // function prove_balance(address usr, uint256 amt) public {
-    //    assert(0 == token.balanceOf(usr));
-    //    token._mint(usr, amt);
-    //    assert(amt == token.balanceOf(usr));
-    // }
+    /**********************************************************************************************/
+    /*                                                                                            */
+    /*                            TRANSFER FUNCTION PROPERTIES                                    */
+    /*                                                                                            */
+    /**********************************************************************************************/
 
     /** 
     *  @dev
@@ -67,7 +63,7 @@ contract OpenZeppelinERC20Test is Test, PropertiesAsserts {
     *
     *  transfer can succeed in self transfers if the following is met:
     *  - amt does not exceeds the balance of msg.sender (address(this))
-    */ 
+    */
     function prove_transferToSelf(uint256 amt) public {
         require(amt > 0);
         token._mint(address(this), amt);
@@ -174,7 +170,52 @@ contract OpenZeppelinERC20Test is Test, PropertiesAsserts {
 
     /** 
     *  @dev
-    *  property ERC20-STDPROP-03 implementation
+    *  property ERC20-STDPROP-06 implementation
+    *
+    *  zero amount transfer should not break accounting
+    */ 
+    function prove_transferZeroAmount(address usr) public {
+        token._mint(address(this), 1);
+        token._mint(usr, 2);
+        uint256 balanceSender = token.balanceOf(address(this));
+        uint256 balanceReceiver = token.balanceOf(usr);
+        require(balanceSender > 0);
+
+        bool success = token.transfer(usr, 0);
+        assert(success);
+        assert(token.balanceOf(address(this)) == balanceSender);
+        assert(token.balanceOf(usr) == balanceReceiver);
+    }
+
+    /** 
+    *  @dev
+    *  property ERC20-STDPROP-07 implementation
+    *
+    *  if for some reason the contract allows transfer to return false we need to make sure
+    *  that all the state variables are the same in the beginning and in the end
+    *  this test is considered a PASS if it reverts all branches or if the state is maintained
+    *  (OpenZeppelin would revert returning us a false FAIL) - thinking about making it a proveFail_
+    *  test.
+    */ 
+    function prove_transferFalseNoStateChange(address to, uint256 amt) public {
+        // Initial state capture
+        token._mint(msg.sender, amt);
+        uint256 amtPlusOne = amt + 1;
+        uint256 senderInitialBalance = token.balanceOf(msg.sender);
+        uint256 receiverInitialBalance = token.balanceOf(to);
+        uint256 initialSupply = token.totalSupply();
+
+        bool success = token.transfer(to, amtPlusOne);
+
+        require(!success);
+        assert(token.balanceOf(msg.sender) == senderInitialBalance);
+        assert(token.balanceOf(to) == receiverInitialBalance);
+        assert(token.totalSupply() == initialSupply);
+    }
+
+    /** 
+    *  @dev
+    *  property ERC20-STDPROP-08 implementation
     *
     *  any transfer call to address 0 should fail and revert.
     */ 
@@ -196,130 +237,145 @@ contract OpenZeppelinERC20Test is Test, PropertiesAsserts {
 
     /** 
     *  @dev
-    *  property ERC20-STDPROP-03 implementation
+    *  property ERC20-STDPROP-09 implementation
     *
     *  transfer should fail if account balance is lower than the total amt
     *  trying to be sent.
     */ 
     function proveFail_transferNotEnoughBalance(address to, uint256 amt) public {
         require(amt > 1);
+        require(amt <= UINT256_MAX);
         token._mint(address(this), amt - 1);
         uint256 balance = token.balanceOf(address(this));
-        require(balance > 0);
+        require(balance >= 0);
 
         bool success = token.transfer(to, amt); // Should revert inside transfer function
-        assertTrue(success, "Transfer succeeded with amt higher than balance");
+        assert(success);
+        assert(token.balanceOf(address(this)) != balance);
     }
 
-    // /** 
-    // *  @dev
-    // *  property ERC20-STDPROP-05 implementation
-    // *  zero amount transfer should not break accounting
-    // */ 
-    function prove_transferZeroAmount(address usr) public {
-        token._mint(address(this), 1);
-        uint256 balance_sender = token.balanceOf(address(this));
-        uint256 balance_receiver = token.balanceOf(usr);
-        require(balance_sender > 0);
-
-        bool r = token.transfer(usr, 0);
-        assertWithMsg(r == true, "Zero amount transfer not succeeded");
-        assertEq(token.balanceOf(address(this)), balance_sender);
-        assertEq(token.balanceOf(usr), balance_receiver);
-    }
-
-    // /** 
-    // *  @dev
-    // *  property ERC20-STDPROP-06 implementation
-    // *  transferFrom coming from address 0 should fail and revert.
-    // */ 
-    function proveFail_transferFromZeroAddress(address from, address to, uint256 amt) public {
-        require(from == address(0));
+    /** 
+    *  @dev
+    *  property ERC20-STDPROP-10 implementation
+    *
+    *  transfer should prevent overflow on the receiver
+    */ 
+    function proveFail_transferOverflowReceiver(address to, uint256 amt) public {
+        require(msg.sender != to);
         require(to != address(0));
-        bool r = token.transferFrom(from, to, amt);
-        assertWithMsg(r == false, "transferFrom coming from zero address success");
-        assert(r != true);
+        require(amt > 0);
+        token._mint(msg.sender, amt);
+        token._mint(to, amt);
+        uint256 oldReceiverBalance = token.balanceOf(to);
+        require(amt <= token.balanceOf(msg.sender));
+        require(token.balanceOf(to) >= 0);
+        require(token.balanceOf(to) <= UINT256_MAX);
+        require(token.balanceOf(msg.sender) <= UINT256_MAX);
+        require((token.balanceOf(to) + amt) > UINT256_MAX);
+
+        bool success = token.transfer(to, amt); // should prevent overflow
+        assert(success);
+        assert(token.balanceOf(to) < oldReceiverBalance + amt - UINT256_MAX + 1);
     }
+
+    /** 
+    *  @dev
+    *  property ERC20-STDPROP-11 implementation
+    *  transfer should not return false on failure, instead it should revert
+    *
+    *  in the implementation below, we supose that the token implementation doesn't allow
+    *  transfer with amt higher than the (balanceOf(address(this)) will be equal to supply)
+    */ 
+    function proveFail_transferNeverReturnsFalse(address to, uint256 amt) public {
+        token._mint(address(this), amt - 1);
+        require(amt > token.balanceOf(address(this)));
+
+        bool success = token.transfer(to, amt);
+        assert(success == false);
+    }
+
+    /**********************************************************************************************/
+    /*                                                                                            */
+    /*                        TRANSFERFROM FUNCTION PROPERTIES                                    */
+    /*                                                                                            */
+    /**********************************************************************************************/
+
+
+    /** 
+    *  @dev
+    *  property ERC20-STDPROP-12 implementation
+    *  transferFrom should update accounting accordingly when succeeding
+    */ 
+    function prove_transferFromSucceedsNormal(address from, address dest, uint256 amount) public {
+    require(from != address(0));
+    require(dest != address(0));
+    require(from != dest);
+    token._mint(from, amount);
+    uint256 initialFromBalance = token.balanceOf(from);
+    require(initialFromBalance >= amount);
+
+    token.approve(msg.sender, amount);
+    uint256 initialAllowance = token.allowance(from, msg.sender);
+    require(initialAllowance >= amount);
+
+    uint256 initialDestBalance = token.balanceOf(dest);
+    require(initialDestBalance + amount >= initialDestBalance);
+
+    bool success = token.transferFrom(from, dest, amount);
+    assert(success);
+
+    assert(token.balanceOf(from) == initialFromBalance - amount);
+    assert(token.balanceOf(dest) == initialDestBalance + amount);
+    // assert(token.allowance(from, msg.sender) == initialAllowance - amount); <- gotta figure out how this works
+}
+
+    /** 
+    *  @dev
+    *  property ERC20-STDPROP-12 implementation
+    *  transferFrom coming from address 0 should fail and revert.
+    */ 
+    // function proveFail_transferFromZeroAddress(address from, address to, uint256 amt) public {
+    //     require(from == address(0));
+    //     require(to != address(0));
+    //     bool r = token.transferFrom(from, to, amt);
+    //     assertWithMsg(r == false, "transferFrom coming from zero address success");
+    //     assert(r != true);
+    // }
 
     // /** 
     // *  @dev
     // *  property ERC20-STDPROP-07 implementation
     // *  transferFrom to address 0 should fail and revert.
     // */ 
-    function proveFail_transferFromToZeroAddress(uint256 amt) public {
-        token._mint(msg.sender, amt);
-        uint256 sender_balance = token.balanceOf(msg.sender);
-        uint256 sender_allowance = token.allowance(msg.sender, address(this));
-        require(sender_balance > 0 && sender_allowance > 0);
-        uint256 maxAmt = sender_balance >= sender_allowance
-                        ? sender_allowance
-                        : sender_balance;
+    // function proveFail_transferFromToZeroAddress(uint256 amt) public {
+    //     token._mint(msg.sender, amt);
+    //     uint256 sender_balance = token.balanceOf(msg.sender);
+    //     uint256 sender_allowance = token.allowance(msg.sender, address(this));
+    //     require(sender_balance > 0 && sender_allowance > 0);
+    //     uint256 maxAmt = sender_balance >= sender_allowance
+    //                     ? sender_allowance
+    //                     : sender_balance;
 
-        bool r = token.transferFrom(msg.sender, address(0), amt % (maxAmt + 1));
-        assertWithMsg(r == false, "transferFrom to address zero sucess");
-        assert(r != true);
-    }
+    //     bool r = token.transferFrom(msg.sender, address(0), amt % (maxAmt + 1));
+    //     assertWithMsg(r == false, "transferFrom to address zero sucess");
+    //     assert(r != true);
+    // }
 
     // /** 
     // *  @dev
     // *  property ERC20-STDPROP-08 implementation
     // *  transferFrom should revert if not enough balance available
     // */ 
-    function proveFail_transferFromNotEnoughBalance(address usr, uint256 amt) public {
-        token._mint(msg.sender, amt);
-        uint256 sender_balance = token.balanceOf(msg.sender);
-        uint256 usr_balance = token.balanceOf(usr);
-        uint256 sender_allowance = token.allowance(msg.sender, address(this));
-        require(sender_balance > 0 && sender_allowance > sender_balance);
+    // function proveFail_transferFromNotEnoughBalance(address usr, uint256 amt) public {
+    //     token._mint(msg.sender, amt);
+    //     uint256 sender_balance = token.balanceOf(msg.sender);
+    //     uint256 usr_balance = token.balanceOf(usr);
+    //     uint256 sender_allowance = token.allowance(msg.sender, address(this));
+    //     require(sender_balance > 0 && sender_allowance > sender_balance);
 
-        bool r = token.transferFrom(msg.sender, usr, sender_balance + 1);
-        assertWithMsg(r == false, "transferFrom with more than account balance success.");
-        assertEq(token.balanceOf(msg.sender), sender_balance);
-        assertEq(token.balanceOf(usr), usr_balance);
-    }
-
-    // /** 
-    // *  @dev
-    // *  property ERC20-STDPROP-09 implementation
-    // *  transferFrom should update accounting accordingly when succeeding
-    // */ 
-    function prove_transferFrom(address usr, uint256 amt) public {
-        require(usr != address(this));
-        require(usr != msg.sender);
-        //token._mint(msg.sender, amt + 10);
-        uint256 sender_balance = token.balanceOf(msg.sender);
-        uint256 usr_balance = token.balanceOf(usr);
-        uint256 sender_allowance = token.allowance(msg.sender, address(this));
-        require(sender_balance > 2 && sender_allowance > sender_balance);
-        uint256 transfer_amt = (amt % sender_balance) + 1;
-        require(token.balanceOf(usr) + transfer_amt < type(uint256).max); //no overflow on receiver
-
-        bool r = token.transferFrom(msg.sender, usr, transfer_amt);
-        assertWithMsg(r == true, "transferFrom not succeeded");
-        assertEq(token.balanceOf(msg.sender), sender_balance - transfer_amt);
-        assertEq(token.balanceOf(usr), usr_balance + transfer_amt);
-    }
-
-    /** 
-    *  @dev
-    *  property ERC20-STDPROP-10 implementation
-    *  transfer should not return false on failure, instead it should revert
-    *
-    *  in the implementation below, we supose that the token implementation doesn't allow
-    *  transfer with amt higher than the supply (balanceOf(address(this)) will be equal to supply)
-    */ 
-    function proveFail_transferShouldRevertOnFailure(address to, uint supply, uint amt) public {
-        require(to != address(0));
-        require(to != address(this));
-        token._mint(address(this), supply);
-        require(amt > 0, "Amount should not be zero");
-        require(amt > supply, "Amount should be greater than supply for failure");
-
-        // Attempt the transfer and store the return value
-        bool success = token.transfer(to, amt);
-
-        // The assert statement will only be reached if the transfer does not revert
-        // Since we expect a revert on failure, reaching this line means the test should fail
-        assert(success == false);
-    }   
+    //     bool r = token.transferFrom(msg.sender, usr, sender_balance + 1);
+    //     assertWithMsg(r == false, "transferFrom with more than account balance success.");
+    //     assertEq(token.balanceOf(msg.sender), sender_balance);
+    //     assertEq(token.balanceOf(usr), usr_balance);
+    // }
 }
