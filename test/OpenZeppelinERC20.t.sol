@@ -219,39 +219,45 @@ contract OpenZeppelinERC20Test is Test, PropertiesAsserts {
     *
     *  any transfer call to address 0 should fail and revert.
     */ 
-    function proveFail_transferToZeroAddress(uint256 supply, uint256 amt) public {
+    function prove_transferToZeroAddressReverts(uint256 supply, uint256 amt) public {   
         require(supply > 0);
         require(amt > 0);
         token._mint(address(this), supply);
-        require(amt <= supply, "Amount exceeds supply!");
-        uint prebal = token.balanceOf(address(this));
+        require(amt <= supply);
+        uint256 prebal = token.balanceOf(address(this));
 
-        //Should revert on transfer
-        bool success = token.transfer(address(0), amt);
+        bytes memory payload = abi.encodeWithSignature("transfer(address,uint256)", address(0), amt);
+        (bool success, bytes memory returnData) = address(token).call(payload);
+        require(success);
 
-        //If it doesn't revert, we reach the assertion and test fails
-        uint postbal = token.balanceOf(address(this));
-        assert(success);
-        assert(prebal != postbal);
+        bool transferReturn = abi.decode(returnData, (bool));
+        uint256 postbal = token.balanceOf(address(this));
+        assert(!transferReturn);
+        assert(prebal == postbal);
     }
 
     /** 
     *  @dev
     *  property ERC20-STDPROP-09 implementation
     *
-    *  transfer should fail if account balance is lower than the total amt
+    *  transfer should fail and revert if account balance is lower than the total amt
     *  trying to be sent.
     */ 
-    function proveFail_transferNotEnoughBalance(address to, uint256 amt) public {
+    function prove_transferNotEnoughBalanceReverts(address to, uint256 amt) public {
         require(amt > 1);
         require(amt <= UINT256_MAX);
-        token._mint(address(this), amt - 1);
-        uint256 balance = token.balanceOf(address(this));
-        require(balance >= 0);
+        token._mint(msg.sender, amt - 1);
+        uint256 prebal = token.balanceOf(msg.sender);
+        require(prebal >= 0);
 
-        bool success = token.transfer(to, amt); // Should revert inside transfer function
-        assert(success);
-        assert(token.balanceOf(address(this)) != balance);
+        bytes memory payload = abi.encodeWithSignature("transfer(address,uint256)", to, amt);
+        (bool success, bytes memory returnData) = address(token).call(payload);
+        require(success);
+
+        bool transferReturn = abi.decode(returnData, (bool));
+        uint256 postbal = token.balanceOf(msg.sender);
+        assert(!transferReturn);
+        assert(prebal == postbal);
     }
 
     /** 
@@ -260,22 +266,30 @@ contract OpenZeppelinERC20Test is Test, PropertiesAsserts {
     *
     *  transfer should prevent overflow on the receiver
     */ 
-    function proveFail_transferOverflowReceiver(address to, uint256 amt) public {
+    function prove_transferOverflowReceiverReverts(address to, uint256 amt) public {
         require(msg.sender != to);
         require(to != address(0));
         require(amt > 0);
         token._mint(msg.sender, amt);
         token._mint(to, amt);
         uint256 oldReceiverBalance = token.balanceOf(to);
-        require(amt <= token.balanceOf(msg.sender));
-        require(token.balanceOf(to) >= 0);
-        require(token.balanceOf(to) <= UINT256_MAX);
-        require(token.balanceOf(msg.sender) <= UINT256_MAX);
-        require((token.balanceOf(to) + amt) > UINT256_MAX);
+        uint256 oldSenderBalance = token.balanceOf(msg.sender);
+        require(amt <= oldSenderBalance);
+        require(oldReceiverBalance >= 0);
+        require(oldReceiverBalance <= UINT256_MAX);
+        require(oldSenderBalance <= UINT256_MAX);
+        require((oldReceiverBalance + amt) < oldReceiverBalance); //overflow
 
-        bool success = token.transfer(to, amt); // should prevent overflow
-        assert(success);
-        assert(token.balanceOf(to) < oldReceiverBalance + amt - UINT256_MAX + 1);
+        bytes memory payload = abi.encodeWithSignature("transfer(address,uint256)", to, amt);
+        (bool success, bytes memory returnData) = address(token).call(payload);
+        require(success);
+
+        bool transferReturn = abi.decode(returnData, (bool));
+        uint256 receiverBalance = token.balanceOf(to);
+        uint256 senderBalance = token.balanceOf(msg.sender);
+        assert(oldSenderBalance == senderBalance);
+        assert(oldReceiverBalance == receiverBalance);
+        assert(!transferReturn);
     }
 
     /** 
@@ -286,12 +300,16 @@ contract OpenZeppelinERC20Test is Test, PropertiesAsserts {
     *  in the implementation below, we supose that the token implementation doesn't allow
     *  transfer with amt higher than the (balanceOf(address(this)) will be equal to supply)
     */ 
-    function proveFail_transferNeverReturnsFalse(address to, uint256 amt) public {
-        token._mint(address(this), amt - 1);
-        require(amt > token.balanceOf(address(this)));
+    function prove_transferNeverReturnsFalse(address to, uint256 amt) public {
+        token._mint(msg.sender, amt - 1);
+        require(amt > token.balanceOf(msg.sender));
 
-        bool success = token.transfer(to, amt);
-        assert(success == false);
+        bytes memory payload = abi.encodeWithSignature("transfer(address,uint256)", to, amt);
+        (bool success, bytes memory returnData) = address(token).call(payload);
+        require(success);
+
+        bool transferReturn = abi.decode(returnData, (bool));
+        assert(transferReturn); //not the best way to do it, but if it returns false it fails
     }
 
     /**********************************************************************************************/
@@ -307,27 +325,27 @@ contract OpenZeppelinERC20Test is Test, PropertiesAsserts {
     *  transferFrom should update accounting accordingly when succeeding
     */ 
     function prove_transferFromSucceedsNormal(address from, address dest, uint256 amount) public {
-    require(from != address(0));
-    require(dest != address(0));
-    require(from != dest);
-    token._mint(from, amount);
-    uint256 initialFromBalance = token.balanceOf(from);
-    require(initialFromBalance >= amount);
+        require(from != address(0));
+        require(dest != address(0));
+        require(from != dest);
+        token._mint(from, amount);
+        uint256 initialFromBalance = token.balanceOf(from);
+        require(initialFromBalance >= amount);
 
-    token.approve(msg.sender, amount);
-    uint256 initialAllowance = token.allowance(from, msg.sender);
-    require(initialAllowance >= amount);
+        token.approve(msg.sender, amount);
+        uint256 initialAllowance = token.allowance(from, msg.sender);
+        require(initialAllowance >= amount);
 
-    uint256 initialDestBalance = token.balanceOf(dest);
-    require(initialDestBalance + amount >= initialDestBalance);
+        uint256 initialDestBalance = token.balanceOf(dest);
+        require(initialDestBalance + amount >= initialDestBalance);
 
-    bool success = token.transferFrom(from, dest, amount);
-    assert(success);
+        bool success = token.transferFrom(from, dest, amount);
+        assert(success);
 
-    assert(token.balanceOf(from) == initialFromBalance - amount);
-    assert(token.balanceOf(dest) == initialDestBalance + amount);
-    // assert(token.allowance(from, msg.sender) == initialAllowance - amount); <- gotta figure out how this works
-}
+        assert(token.balanceOf(from) == initialFromBalance - amount);
+        assert(token.balanceOf(dest) == initialDestBalance + amount);
+        // assert(token.allowance(from, msg.sender) == initialAllowance - amount); <- gotta figure out how this works
+    }
 
     /** 
     *  @dev
