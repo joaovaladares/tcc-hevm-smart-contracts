@@ -90,7 +90,7 @@ contract OpenZeppelinERC20Test is Test, PropertiesAsserts {
         require(to != address(this));
         token._mint(address(this), amt);
         uint256 prebalSender = token.balanceOf(address(this));
-        uint256 prebal_receiver = token.balanceOf(to);
+        uint256 prebalReceiver = token.balanceOf(to);
         require(prebalSender > 0);
 
         bool success = token.transfer(to, amt);
@@ -168,12 +168,12 @@ contract OpenZeppelinERC20Test is Test, PropertiesAsserts {
         assert(token.allowance(address(this), addr) == addrInitialAllowance);
     }
 
-    /** 
-    *  @dev
-    *  property ERC20-STDPROP-06 implementation
-    *
-    *  zero amount transfer should not break accounting
-    */ 
+    // /** 
+    // *  @dev
+    // *  property ERC20-STDPROP-06 implementation
+    // *
+    // *  zero amount transfer should not break accounting
+    // */ 
     function prove_transferZeroAmount(address usr) public {
         token._mint(address(this), 1);
         token._mint(usr, 2);
@@ -205,9 +205,12 @@ contract OpenZeppelinERC20Test is Test, PropertiesAsserts {
         uint256 receiverInitialBalance = token.balanceOf(to);
         uint256 initialSupply = token.totalSupply();
 
-        bool success = token.transfer(to, amtPlusOne);
+        bytes memory payload = abi.encodeWithSignature("transfer(address,uint256)", to, amtPlusOne);
+        (bool success, bytes memory returnData) = address(token).call(payload);
+        bool transferReturn = abi.decode(returnData, (bool));
+        require(success);
+        require(!transferReturn);
 
-        require(!success);
         assert(token.balanceOf(msg.sender) == senderInitialBalance);
         assert(token.balanceOf(to) == receiverInitialBalance);
         assert(token.totalSupply() == initialSupply);
@@ -230,10 +233,11 @@ contract OpenZeppelinERC20Test is Test, PropertiesAsserts {
         (bool success, bytes memory returnData) = address(token).call(payload);
         require(success);
 
+        // if it doesn't revert on the transfer call, test will fail because prebal != postbal
         bool transferReturn = abi.decode(returnData, (bool));
         uint256 postbal = token.balanceOf(address(this));
-        assert(!transferReturn);
         assert(prebal == postbal);
+        assert(!transferReturn); //gotta figure out what to do here
     }
 
     /** 
@@ -312,22 +316,29 @@ contract OpenZeppelinERC20Test is Test, PropertiesAsserts {
         assert(transferReturn); //not the best way to do it, but if it returns false it fails
     }
 
+
     /**********************************************************************************************/
     /*                                                                                            */
     /*                        TRANSFERFROM FUNCTION PROPERTIES                                    */
     /*                                                                                            */
     /**********************************************************************************************/
 
-
     /** 
     *  @dev
     *  property ERC20-STDPROP-12 implementation
+    *
     *  transferFrom should update accounting accordingly when succeeding
+    *
+    *  Non-self transfers transferFrom calls must succeed and return true if
+    *  - amount does not exceed the balance of address from
+    *  - amount does not exceed allowance of msg.sender for address from
     */ 
     function prove_transferFromSucceedsNormal(address from, address dest, uint256 amount) public {
         require(from != address(0));
         require(dest != address(0));
         require(from != dest);
+        require(amount > 0);
+        require(amount != type(uint256).max);
         token._mint(from, amount);
         uint256 initialFromBalance = token.balanceOf(from);
         require(initialFromBalance >= amount);
@@ -338,13 +349,55 @@ contract OpenZeppelinERC20Test is Test, PropertiesAsserts {
 
         uint256 initialDestBalance = token.balanceOf(dest);
         require(initialDestBalance + amount >= initialDestBalance);
+        
+        bytes memory payload = abi.encodeWithSignature("transferFrom(address,address,uint256)", from, dest, amount);
+        (bool success, bytes memory returnData) = address(token).call(payload);
+        require(success);
 
-        bool success = token.transferFrom(from, dest, amount);
-        assert(success);
+        bool transferReturn = abi.decode(returnData, (bool));
+        assert(transferReturn);
 
         assert(token.balanceOf(from) == initialFromBalance - amount);
         assert(token.balanceOf(dest) == initialDestBalance + amount);
-        // assert(token.allowance(from, msg.sender) == initialAllowance - amount); <- gotta figure out how this works
+        assert(token.allowance(from, msg.sender) == initialAllowance - amount);
+    }
+
+    /** 
+    *  @dev
+    *  property ERC20-STDPROP-13 implementation
+    *
+    *  Self transfers should not break accounting
+    *
+    *  All self transferFrom calls must succeed and return true if:
+    *  - amount does not exceed the balance of address from
+    *  - amount does not exceed the allowance of msg.sender for address from
+    */ 
+    function prove_transferFromToSelf(address from, address dest, uint256 amount) public {
+        require(from != address(0));
+        require(from == dest);
+        require(amount > 0);
+        require(amount != type(uint256).max);
+
+        token._mint(from, amount);
+        uint256 initialFromBalance = token.balanceOf(from);
+        require(initialFromBalance > 0);
+
+        uint256 initialDestBalance = token.balanceOf(dest);
+
+        token.approve(msg.sender, amount);
+        uint256 initialFromAllowance = token.allowance(from, msg.sender);
+        require(initialFromAllowance >= amount);
+
+        bool success = token.transferFrom(from, dest, amount);
+        require(success);
+
+        uint256 newFromBalance = token.balanceOf(from);
+        uint256 newDestBalance = token.balanceOf(dest);
+        uint256 newFromAllowance = token.allowance(from, msg.sender);
+
+        assert(newFromBalance == initialFromBalance);
+        assert(newDestBalance == initialDestBalance);
+        assert(newFromAllowance == initialFromAllowance - amount); // is this right?
     }
 
     /** 
